@@ -178,7 +178,7 @@ async def safe_reply(msg, text: str, kb=None, md=ParseMode.MARKDOWN):
 
 
 # ═══════════════════════════════════════════════════════════
-#  KEYBOARDS - FIXED
+#  KEYBOARDS
 # ═══════════════════════════════════════════════════════════
 def kb_panel():
     return InlineKeyboardMarkup([
@@ -189,15 +189,7 @@ def kb_panel():
     ])
 
 def kb_back():
-    """Simple back button to return to panel"""
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Panel", callback_data="panel")]])
-
-def kb_back_with_cancel():
-    """Back button that cancels current operation"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="panel")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="panel")]
-    ])
 
 def kb_cancel():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="panel")]])
@@ -236,7 +228,7 @@ def kb_deployed(url: str, pid: int):
 
 
 # ═══════════════════════════════════════════════════════════
-#  HELP TEXT - IMPROVED with private sites template info
+#  HELP TEXT
 # ═══════════════════════════════════════════════════════════
 HELP = (
     "❓ DeployX Bot - Quick Help\n\n"
@@ -279,16 +271,8 @@ HELP = (
     "• You can redeploy projects with new ZIPs\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "🎨 Premium Templates & Private Sites\n\n"
-    "Need a professional website? Get premium templates:\n"
-    "• Business websites\n"
-    "• Portfolio templates\n"
-    "• E-commerce layouts\n"
-    "• Custom designs\n\n"
     "For private sites and premium templates, contact:\n"
     "@LM_S0\n\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "📞 Need More Help?\n\n"
-    "Contact support: @LM_S0\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 )
 
@@ -527,90 +511,125 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
 
 
 # ═══════════════════════════════════════════════════════════
-#  COMMANDS - IMPROVED
+#  COMMANDS - FIXED START COMMAND
 # ═══════════════════════════════════════════════════════════
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    ctx.user_data.clear()
+    """Start command handler - FIXED"""
+    try:
+        u = update.effective_user
+        if not u:
+            log.error("No effective user in start command")
+            return
+            
+        db_upsert_user(u.id, u.username, u.first_name)
+        ctx.user_data.clear()
 
-    if not await gate(update, ctx):
-        return
+        if not await gate(update, ctx):
+            return
 
-    count = db_count(u.id)
-    
-    # Improved welcome message with clear options
-    if count > 0:
-        text = (
-            f"👋 Welcome back, {u.first_name}!\n\n"
-            f"You have {count} project(s) saved.\n\n"
-            f"What would you like to do?"
-        )
-    else:
-        text = (
-            f"🎉 Welcome to DeployX, {u.first_name}!\n\n"
-            f"I help you deploy websites instantly to the internet.\n\n"
-            f"📦 Quick Start:\n"
-            f"1. Prepare your website files (must have index.html)\n"
-            f"2. ZIP them with: zip -j site.zip your-folder/*\n"
-            f"3. Send the ZIP to me\n\n"
-            f"✨ That's it! You'll get a live URL immediately.\n\n"
-            f"👇 Choose an option below:"
-        )
-    
-    # Use inline keyboard with clear options
-    await safe_reply(
-        update.message, 
-        text,
-        InlineKeyboardMarkup([
+        count = db_count(u.id)
+        
+        # Improved welcome message with clear options
+        if count > 0:
+            text = (
+                f"👋 Welcome back, {u.first_name}!\n\n"
+                f"You have {count} project(s) saved.\n\n"
+                f"What would you like to do?"
+            )
+        else:
+            text = (
+                f"🎉 Welcome to DeployX, {u.first_name}!\n\n"
+                f"I help you deploy websites instantly to the internet.\n\n"
+                f"📦 Quick Start:\n"
+                f"1. Prepare your website files (must have index.html)\n"
+                f"2. ZIP them with: zip -j site.zip your-folder/*\n"
+                f"3. Send the ZIP to me\n\n"
+                f"✨ That's it! You'll get a live URL immediately.\n\n"
+                f"👇 Choose an option below:"
+            )
+        
+        # Create inline keyboard
+        keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📊 Open Main Menu", callback_data="panel")],
             [InlineKeyboardButton("⚡ Quick Deploy", callback_data="quick_deploy")],
             [InlineKeyboardButton("❓ View Help Guide", callback_data="help")]
-        ]),
-    )
+        ])
+        
+        # Send the message
+        await update.message.reply_text(
+            text, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        log.error(f"Error in start command: {e}")
+        await update.message.reply_text(
+            "⚠️ Something went wrong. Please try again or contact support.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❓ Help", callback_data="help")]])
+        )
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Improved help command with back button"""
-    await safe_reply(update.message, HELP, kb_back())
+    """Help command"""
+    try:
+        await update.message.reply_text(
+            HELP, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_back(),
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.error(f"Error in help command: {e}")
+        await update.message.reply_text("❌ Help information unavailable. Please try again later.")
 
 
 async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Main panel with clear navigation"""
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    ctx.user_data.clear()
-    if not await gate(update, ctx):
-        return
-    count = db_count(u.id)
-    await safe_reply(
-        update.message,
-        f"📊 DeployX Control Panel\n\n"
-        f"📁 Active Projects: {count}\n\n"
-        f"Choose an option below:",
-        kb_panel(),
-    )
+    try:
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
+        ctx.user_data.clear()
+        if not await gate(update, ctx):
+            return
+        count = db_count(u.id)
+        await update.message.reply_text(
+            f"📊 DeployX Control Panel\n\n"
+            f"📁 Active Projects: {count}\n\n"
+            f"Choose an option below:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_panel(),
+        )
+    except Exception as e:
+        log.error(f"Error in panel command: {e}")
+        await update.message.reply_text("⚠️ Could not open panel. Please try /start")
 
 
 async def cmd_deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    if not await gate(update, ctx):
-        return
-    ctx.user_data.clear()
-    ctx.user_data["state"] = STATE_WAITING_ZIP
-    ctx.user_data["mode"]  = "quick"
-    await safe_reply(
-        update.message,
-        "⚡ Quick Deploy\n\n"
-        "Send me your .zip file and I'll deploy it instantly!\n\n"
-        "💡 Tip: use zip -j site.zip folder/*",
-        kb_cancel(),
-    )
+    """Deploy command"""
+    try:
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
+        if not await gate(update, ctx):
+            return
+        ctx.user_data.clear()
+        ctx.user_data["state"] = STATE_WAITING_ZIP
+        ctx.user_data["mode"]  = "quick"
+        await update.message.reply_text(
+            "⚡ Quick Deploy\n\n"
+            "Send me your .zip file and I'll deploy it instantly!\n\n"
+            "💡 Tip: use zip -j site.zip folder/*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_cancel(),
+        )
+    except Exception as e:
+        log.error(f"Error in deploy command: {e}")
+        await update.message.reply_text("⚠️ Could not start deploy. Please try /start")
 
 
 # ═══════════════════════════════════════════════════════════
-#  CALLBACK HANDLER - IMPROVED with better navigation
+#  CALLBACK HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q    = update.callback_query
@@ -650,7 +669,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb_panel(),
         )
 
-    # Help (Improved)
+    # Help
     elif data == "help":
         await safe_edit(msg, HELP, kb_back())
 
@@ -961,6 +980,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Add handlers
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("panel",  cmd_panel))
     app.add_handler(CommandHandler("help",   cmd_help))
@@ -970,7 +990,10 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
 
-    log.info("DeployX Bot started.")
+    log.info("DeployX Bot started successfully!")
+    log.info("Bot token: %s", BOT_TOKEN[:10] + "...")
+    
+    # Start polling
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
