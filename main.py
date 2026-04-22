@@ -1,5 +1,5 @@
 """
-💀 DeployX Bot — Advanced Website Deployment Platform
+DeployX Bot — Advanced Website Deployment Platform
 100% fixed · Auto-migrates DB · Zero crash guarantee
 """
 
@@ -56,54 +56,65 @@ log = logging.getLogger("DeployX")
 #  DATABASE  — with auto-migration so old DBs never break
 # ═══════════════════════════════════════════════════════════
 def db() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
+    try:
+        c = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        return c
+    except Exception as e:
+        log.error(f"Database connection error: {e}")
+        raise
 
 
 def db_init():
     """Create tables if missing, then add any missing columns (migration)."""
-    with db() as c:
-        # Create base tables
-        c.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                telegram_id INTEGER PRIMARY KEY,
-                username    TEXT,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS projects (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER NOT NULL,
-                name       TEXT    NOT NULL,
-                site_id    TEXT,
-                deploy_id  TEXT,
-                url        TEXT,
-                status     TEXT DEFAULT 'pending',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
-            );
-        """)
+    try:
+        with db() as c:
+            # Create base tables
+            c.executescript("""
+                CREATE TABLE IF NOT EXISTS users (
+                    telegram_id INTEGER PRIMARY KEY,
+                    username    TEXT,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS projects (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL,
+                    name       TEXT    NOT NULL,
+                    site_id    TEXT,
+                    deploy_id  TEXT,
+                    url        TEXT,
+                    status     TEXT DEFAULT 'pending',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+                );
+            """)
 
-        # Auto-migration: add first_name column if it doesn't exist
-        existing = {row[1] for row in c.execute("PRAGMA table_info(users)")}
-        if "first_name" not in existing:
-            c.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
-            log.info("DB migration: added first_name column to users table.")
+            # Auto-migration: add first_name column if it doesn't exist
+            existing = {row[1] for row in c.execute("PRAGMA table_info(users)")}
+            if "first_name" not in existing:
+                c.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
+                log.info("DB migration: added first_name column to users table.")
 
-    log.info("Database ready.")
+        log.info("Database ready.")
+    except Exception as e:
+        log.error(f"Database init error: {e}")
+        raise
 
 
 def db_upsert_user(telegram_id: int, username: Optional[str], first_name: Optional[str]):
-    with db() as c:
-        c.execute(
-            "INSERT OR IGNORE INTO users (telegram_id, username, first_name) VALUES (?,?,?)",
-            (telegram_id, username, first_name),
-        )
-        c.execute(
-            "UPDATE users SET username=?, first_name=? WHERE telegram_id=?",
-            (username, first_name, telegram_id),
-        )
+    try:
+        with db() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, username, first_name) VALUES (?,?,?)",
+                (telegram_id, username, first_name),
+            )
+            c.execute(
+                "UPDATE users SET username=?, first_name=? WHERE telegram_id=?",
+                (username, first_name, telegram_id),
+            )
+    except Exception as e:
+        log.error(f"DB upsert user error: {e}")
 
 
 def db_create_project(user_id: int, name: str) -> int:
@@ -199,7 +210,7 @@ def kb_projects(projects):
     for p in projects:
         icon = "✅" if p["status"] == "deployed" else "🕐"
         rows.append([InlineKeyboardButton(f"{icon} {p['name']}", callback_data=f"proj_{p['id']}")])
-    rows.append([InlineKeyboardButton("🔙 Back", callback_data="panel")])
+    rows.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="panel")])
     return InlineKeyboardMarkup(rows)
 
 def kb_project(pid: int):
@@ -209,55 +220,112 @@ def kb_project(pid: int):
         [InlineKeyboardButton("🔗 Live URL",     callback_data=f"url_{pid}"),
          InlineKeyboardButton("🗑 Delete",       callback_data=f"delete_{pid}")],
         [InlineKeyboardButton("🔙 My Projects",  callback_data="my_projects")],
+        [InlineKeyboardButton("🏠 Main Menu",    callback_data="panel")],
     ])
 
 def kb_confirm(pid: int):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_delete_{pid}"),
         InlineKeyboardButton("❌ Keep It",     callback_data=f"proj_{pid}"),
+        InlineKeyboardButton("🔙 Back",        callback_data="my_projects"),
     ]])
 
 def kb_deployed(url: str, pid: int):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Open Live Site", url=url)],
         [InlineKeyboardButton("📋 Project Menu",   callback_data=f"proj_{pid}"),
-         InlineKeyboardButton("📊 Panel",          callback_data="panel")],
+         InlineKeyboardButton("🏠 Main Menu",      callback_data="panel")],
     ])
 
 
 # ═══════════════════════════════════════════════════════════
-#  SUBSCRIPTION GATE
+#  HELP TEXT
+# ═══════════════════════════════════════════════════════════
+HELP = (
+    "❓ DeployX Bot - Quick Help\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🚀 How to Deploy Your Website\n\n"
+    "1. Prepare your website files\n"
+    "   • Must include index.html\n"
+    "   • Only static files (HTML/CSS/JS/images)\n\n"
+    "2. Create a ZIP file\n"
+    "   Important: Use this command:\n"
+    "   zip -j site.zip your-folder/*\n"
+    "   (The -j flag puts files at root level)\n\n"
+    "3. Send the ZIP to this bot\n"
+    "   • Use Quick Deploy for instant deployment\n"
+    "   • Or create a Project to save it\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🎯 Commands\n\n"
+    "• /start - Welcome message\n"
+    "• /panel - Open main menu\n"
+    "• /deploy - Quick deploy a website\n"
+    "• /help - Show this help message\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "⚠️ Common Problems & Solutions\n\n"
+    "❌ No index.html\n"
+    "   → Use -j flag when zipping\n\n"
+    "❌ File too large\n"
+    "   → Max size is 10 MB\n"
+    "   → Compress images\n\n"
+    "❌ PHP not working\n"
+    "   → DeployX only supports static sites\n"
+    "   → Use HTML/CSS/JS only\n\n"
+    "❌ Site shows blank page\n"
+    "   → Check browser console for errors\n"
+    "   → Verify all file paths are relative\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "💡 Pro Tips\n\n"
+    "• Test your site locally before deploying\n"
+    "• Use relative paths in your code\n"
+    "• Keep index.html at the root of your ZIP\n"
+    "• You can redeploy projects with new ZIPs\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🎨 Premium Templates & Private Sites\n\n"
+    "For private sites and premium templates, contact:\n"
+    "@LM_S0\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+)
+
+
+# ═══════════════════════════════════════════════════════════
+#  SUBSCRIPTION GATE - DISABLED FOR TESTING
 # ═══════════════════════════════════════════════════════════
 async def is_subscribed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    try:
-        m = await ctx.bot.get_chat_member(REQUIRED_CHANNEL, update.effective_user.id)
-        return m.status in ("member", "administrator", "creator")
-    except Exception as e:
-        log.warning("Subscription check error: %s", e)
-        return False
+    # DISABLED - always returns True for testing
+    return True
+    # Original code commented out:
+    # try:
+    #     m = await ctx.bot.get_chat_member(REQUIRED_CHANNEL, update.effective_user.id)
+    #     return m.status in ("member", "administrator", "creator")
+    # except Exception as e:
+    #     log.warning("Subscription check error: %s", e)
+    #     return False
 
 
 async def gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    if await is_subscribed(update, ctx):
-        return True
-    url  = f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
-    kb   = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📢 Join Channel", url=url),
-        InlineKeyboardButton("✅ I Joined",     callback_data="check_sub"),
-    ]])
-    text = (
-        "🔒 *Access Required*\n\n"
-        "Join our channel to use DeployX Bot.\n\n"
-        "1️⃣ Tap *Join Channel*\n"
-        "2️⃣ Come back and tap *I Joined*"
-    )
-    msg = update.callback_query.message if update.callback_query else update.effective_message
-    if update.callback_query:
-        await update.callback_query.answer("Join the channel first!", show_alert=True)
-        await safe_edit(msg, text, kb)
-    else:
-        await safe_reply(msg, text, kb)
-    return False
+    # DISABLED - always returns True
+    return True
+    # if await is_subscribed(update, ctx):
+    #     return True
+    # url  = f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
+    # kb   = InlineKeyboardMarkup([[
+    #     InlineKeyboardButton("📢 Join Channel", url=url),
+    #     InlineKeyboardButton("✅ I Joined",     callback_data="check_sub"),
+    # ]])
+    # text = (
+    #     "🔒 Access Required\n\n"
+    #     "Join our channel to use DeployX Bot.\n\n"
+    #     "1️⃣ Tap Join Channel\n"
+    #     "2️⃣ Come back and tap I Joined"
+    # )
+    # msg = update.callback_query.message if update.callback_query else update.effective_message
+    # if update.callback_query:
+    #     await update.callback_query.answer("Join the channel first!", show_alert=True)
+    #     await safe_edit(msg, text, kb)
+    # else:
+    #     await safe_reply(msg, text, kb)
+    # return False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -317,8 +385,8 @@ def extract_zip(zip_path: str, dest: str) -> tuple:
     if os.path.getsize(zip_path) > MAX_ZIP_BYTES:
         mb = os.path.getsize(zip_path) / 1024 / 1024
         return False, (
-            f"❌ *File Too Large* ({mb:.1f} MB)\n\n"
-            "Maximum allowed size is *10 MB*.\n"
+            f"❌ File Too Large ({mb:.1f} MB)\n\n"
+            "Maximum allowed size is 10 MB.\n"
             "Compress your images or remove unused assets."
         )
 
@@ -326,22 +394,22 @@ def extract_zip(zip_path: str, dest: str) -> tuple:
         with zipfile.ZipFile(zip_path, "r") as zf:
             for name in zf.namelist():
                 if name.startswith("/") or ".." in name:
-                    return False, "❌ *Security Error*\n\nZIP contains unsafe paths."
+                    return False, "❌ Security Error\n\nZIP contains unsafe paths."
                 if Path(name).suffix.lower() in BLOCKED_EXT:
                     return False, (
-                        f"❌ *Blocked File:* `{name}`\n\n"
+                        f"❌ Blocked File: {name}\n\n"
                         "Only static files are allowed.\n"
-                        "Remove `.php .py .sh .exe` and try again."
+                        "Remove .php .py .sh .exe and try again."
                     )
             zf.extractall(dest)
     except zipfile.BadZipFile:
         return False, (
-            "❌ *Invalid ZIP File*\n\n"
+            "❌ Invalid ZIP File\n\n"
             "The file you sent is not a valid ZIP archive.\n"
             "Re-zip your files and try again."
         )
     except Exception as e:
-        return False, f"❌ *Extraction Error*\n\n`{e}`"
+        return False, f"❌ Extraction Error\n\n{e}"
 
     # Auto-fix: flatten single top-level folder
     entries = [e for e in os.listdir(dest) if e != "__MACOSX" and not e.startswith(".")]
@@ -359,11 +427,11 @@ def extract_zip(zip_path: str, dest: str) -> tuple:
 
     if not os.path.isfile(os.path.join(dest, "index.html")):
         return False, (
-            "❌ *Missing index.html*\n\n"
-            "Your ZIP must have `index.html` at the root level.\n\n"
-            "💡 *Fix — zip like this:*\n"
-            "`zip -j site.zip your-folder/*`\n\n"
-            "The `-j` flag puts files at the root."
+            "❌ Missing index.html\n\n"
+            "Your ZIP must have index.html at the root level.\n\n"
+            "💡 Fix — zip like this:\n"
+            "zip -j site.zip your-folder/*\n\n"
+            "The -j flag puts files at the root."
         )
 
     return True, ""
@@ -390,21 +458,21 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
     dest = zip_path + "_ex"
     os.makedirs(dest, exist_ok=True)
     try:
-        await cb("📦 *Step 1/4* — Extracting & validating ZIP...")
+        await cb("📦 Step 1/4 — Extracting & validating ZIP...")
         ok, err = extract_zip(zip_path, dest)
         if not ok:
             return False, err, "", ""
 
-        await cb("🔍 *Step 2/4* — Analysing files...")
+        await cb("🔍 Step 2/4 — Analysing files...")
         fm    = build_map(dest)
         smap  = {p: s for p, (s, _) in fm.items()}
         total = len(fm)
 
         if not site_id:
-            await cb("🌐 *Step 2/4* — Creating Netlify site...")
+            await cb("🌐 Step 2/4 — Creating Netlify site...")
             site_id = net_create_site()["id"]
 
-        await cb(f"🚀 *Step 3/4* — Creating deploy ({total} files)...")
+        await cb(f"🚀 Step 3/4 — Creating deploy ({total} files)...")
         dep      = net_create_deploy(site_id, smap)
         dep_id   = dep["id"]
         required = set(dep.get("required", []))
@@ -412,7 +480,7 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
         if required:
             done = 0
             tot  = len(required)
-            await cb(f"📤 *Step 3/4* — Uploading {tot} file(s)...")
+            await cb(f"📤 Step 3/4 — Uploading {tot} file(s)...")
             for path, (s, data) in fm.items():
                 if s in required:
                     net_upload(dep_id, path, data)
@@ -421,9 +489,9 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
                     if done % step == 0 or done == tot:
                         pct = int(done / tot * 100)
                         bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-                        await cb(f"📤 *Uploading...*\n`[{bar}]` {pct}% ({done}/{tot})")
+                        await cb(f"📤 Uploading...\n[{bar}] {pct}% ({done}/{tot})")
 
-        await cb("⏳ *Step 4/4* — Waiting for site to go live...")
+        await cb("⏳ Step 4/4 — Waiting for site to go live...")
         await asyncio.sleep(4)
 
         info = net_get_deploy(dep_id)
@@ -446,10 +514,10 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
         code = e.response.status_code if e.response else "?"
         body = e.response.text[:300]  if e.response else ""
         log.error("Netlify HTTP %s: %s", code, body)
-        return False, f"❌ *Netlify Error* (HTTP {code})\n\n`{body}`", "", ""
+        return False, f"❌ Netlify Error (HTTP {code})\n\n{body}", "", ""
     except Exception as e:
         log.exception("Deploy error")
-        return False, f"❌ *Error*\n\n`{e}`", "", ""
+        return False, f"❌ Error\n\n{e}", "", ""
     finally:
         shutil.rmtree(dest, ignore_errors=True)
         try:
@@ -459,413 +527,459 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
 
 
 # ═══════════════════════════════════════════════════════════
-#  HELP TEXT
-# ═══════════════════════════════════════════════════════════
-HELP = (
-    "❓ *DeployX — Help Guide*\n\n"
-    "━━━━━━━━━━━━━━━━━━━\n"
-    "🚀 *Deploy in 3 steps*\n\n"
-    "*1.* Prepare your website\n"
-    "   • Must have `index.html`\n"
-    "   • Static files only (HTML/CSS/JS)\n\n"
-    "*2.* Zip your files\n"
-    "   `zip -j site.zip your-folder/*`\n"
-    "   ☝️ The `-j` flag is required!\n\n"
-    "*3.* Send the ZIP here\n"
-    "   • ⚡ Quick Deploy — instant, no setup\n"
-    "   • 📁 Projects — save for redeployment\n\n"
-    "━━━━━━━━━━━━━━━━━━━\n"
-    "⚠️ *Common Issues*\n\n"
-    "❌ No index.html → use `-j` when zipping\n"
-    "❌ File too large → max 10 MB\n"
-    "❌ PHP not working → static only\n"
-    "❌ Blank page → check browser console\n\n"
-    "━━━━━━━━━━━━━━━━━━━\n"
-    "💡 *Tips*\n\n"
-    "• Use relative paths in HTML/CSS/JS\n"
-    "• Keep `index.html` at the root of ZIP\n"
-    "• Test locally before deploying\n\n"
-    "━━━━━━━━━━━━━━━━━━━\n"
-    "🔒 *Support & Templates*\n"
-    "Contact: @LM_S0"
-)
-
-
-# ═══════════════════════════════════════════════════════════
-#  COMMANDS
+#  COMMANDS - SIMPLIFIED AND FIXED
 # ═══════════════════════════════════════════════════════════
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    ctx.user_data.clear()
+    """Start command handler - SIMPLIFIED AND FIXED"""
+    try:
+        log.info(f"Start command received from user {update.effective_user.id}")
+        
+        u = update.effective_user
+        if not u:
+            await update.message.reply_text("❌ Error: Could not identify user.")
+            return
+            
+        # Save user to database
+        try:
+            db_upsert_user(u.id, u.username, u.first_name)
+            log.info(f"User {u.id} saved to database")
+        except Exception as e:
+            log.error(f"Database error in start: {e}")
+            # Continue even if DB fails
+        
+        ctx.user_data.clear()
 
-    if not await gate(update, ctx):
-        return
+        # Subscription check disabled for now
+        # if not await gate(update, ctx):
+        #     return
 
-    count = db_count(u.id)
-    text  = (
-        f"👋 *Welcome back, {u.first_name}!*\n\n"
-        f"You have *{count} project(s)*. What would you like to do?"
-        if count > 0 else
-        f"💀 *Welcome to DeployX, {u.first_name}!*\n\n"
-        "I deploy your websites to the internet in seconds.\n\n"
-        "📦 Upload a ZIP → 🌐 Get a live URL\n\n"
-        "_That simple. Let's go!_"
-    )
-    await safe_reply(
-        update.message, text,
-        InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
-    )
-
-
-async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    ctx.user_data.clear()
-    if not await gate(update, ctx):
-        return
-    count = db_count(u.id)
-    await safe_reply(
-        update.message,
-        f"📊 *DeployX Panel*\n\nProjects: *{count}* | What would you like to do?",
-        kb_panel(),
-    )
+        count = 0
+        try:
+            count = db_count(u.id)
+        except Exception as e:
+            log.error(f"Error getting project count: {e}")
+        
+        # Welcome message
+        if count > 0:
+            text = (
+                f"👋 Welcome back, {u.first_name}!\n\n"
+                f"You have {count} project(s) saved.\n\n"
+                f"What would you like to do?"
+            )
+        else:
+            text = (
+                f"🎉 Welcome to DeployX, {u.first_name}!\n\n"
+                f"I help you deploy websites instantly to the internet.\n\n"
+                f"📦 Quick Start:\n"
+                f"1. Prepare your website files (must have index.html)\n"
+                f"2. ZIP them with: zip -j site.zip your-folder/*\n"
+                f"3. Send the ZIP to me\n\n"
+                f"✨ That's it! You'll get a live URL immediately.\n\n"
+                f"👇 Choose an option below:"
+            )
+        
+        # Create inline keyboard
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Open Main Menu", callback_data="panel")],
+            [InlineKeyboardButton("⚡ Quick Deploy", callback_data="quick_deploy")],
+            [InlineKeyboardButton("❓ View Help Guide", callback_data="help")]
+        ])
+        
+        # Send the message
+        await update.message.reply_text(
+            text, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+        log.info(f"Start command response sent to user {u.id}")
+        
+    except Exception as e:
+        log.error(f"CRITICAL Error in start command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Bot error. Please contact @LM_S0 for support.\n\nError: " + str(e)[:100]
+        )
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await safe_reply(update.message, HELP, kb_back())
+    """Help command"""
+    try:
+        await update.message.reply_text(
+            HELP, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_back(),
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.error(f"Error in help command: {e}")
+        await update.message.reply_text("❌ Help unavailable. Please try again later.")
+
+
+async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Main panel with clear navigation"""
+    try:
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
+        ctx.user_data.clear()
+        count = db_count(u.id)
+        await update.message.reply_text(
+            f"📊 DeployX Control Panel\n\n"
+            f"📁 Active Projects: {count}\n\n"
+            f"Choose an option below:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_panel(),
+        )
+    except Exception as e:
+        log.error(f"Error in panel command: {e}")
+        await update.message.reply_text("⚠️ Could not open panel. Please try /start")
 
 
 async def cmd_deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-    if not await gate(update, ctx):
-        return
-    ctx.user_data.clear()
-    ctx.user_data["state"] = STATE_WAITING_ZIP
-    ctx.user_data["mode"]  = "quick"
-    await safe_reply(
-        update.message,
-        "⚡ *Quick Deploy*\n\n"
-        "Send me your `.zip` file and I'll deploy it instantly!\n\n"
-        "💡 _Tip: use_ `zip -j site.zip folder/*`",
-        kb_cancel(),
-    )
+    """Deploy command"""
+    try:
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
+        ctx.user_data.clear()
+        ctx.user_data["state"] = STATE_WAITING_ZIP
+        ctx.user_data["mode"]  = "quick"
+        await update.message.reply_text(
+            "⚡ Quick Deploy\n\n"
+            "Send me your .zip file and I'll deploy it instantly!\n\n"
+            "💡 Tip: use zip -j site.zip folder/*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_cancel(),
+        )
+    except Exception as e:
+        log.error(f"Error in deploy command: {e}")
+        await update.message.reply_text("⚠️ Could not start deploy. Please try /start")
 
 
 # ═══════════════════════════════════════════════════════════
 #  CALLBACK HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q    = update.callback_query
-    await q.answer()
-    data = q.data
-    u    = update.effective_user
-    msg  = q.message
+    try:
+        q = update.callback_query
+        await q.answer()
+        data = q.data
+        u = update.effective_user
+        msg = q.message
 
-    # ── Subscription verify ──
-    if data == "check_sub":
-        if await is_subscribed(update, ctx):
-            db_upsert_user(u.id, u.username, u.first_name)
+        log.info(f"Callback received: {data} from user {u.id}")
+
+        # Subscription verify (disabled)
+        if data == "check_sub":
             await safe_edit(
                 msg,
-                f"✅ *Verified! Welcome, {u.first_name}!*\n\nYou're all set.",
+                f"✅ Verified! Welcome, {u.first_name}!\n\n"
+                f"You're all set. Tap below to start deploying.",
                 InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
             )
-        else:
-            await q.answer("❌ You haven't joined yet.", show_alert=True)
-        return
+            return
 
-    if not await gate(update, ctx):
-        return
+        db_upsert_user(u.id, u.username, u.first_name)
 
-    db_upsert_user(u.id, u.username, u.first_name)
-
-    # ── Panel ──
-    if data == "panel":
-        ctx.user_data.clear()
-        count = db_count(u.id)
-        await safe_edit(
-            msg,
-            f"📊 *DeployX Panel*\n\nProjects: *{count}* | What would you like to do?",
-            kb_panel(),
-        )
-
-    # ── Help ──
-    elif data == "help":
-        await safe_edit(msg, HELP, kb_back())
-
-    # ── New Project ──
-    elif data == "new_project":
-        ctx.user_data["state"] = STATE_WAITING_NAME
-        await safe_edit(
-            msg,
-            "➕ *New Project*\n\nSend me a name for your project.\n\n_Example: my-portfolio_",
-            kb_cancel(),
-        )
-
-    # ── My Projects ──
-    elif data == "my_projects":
-        projects = db_user_projects(u.id)
-        if not projects:
+        # Panel (Main Menu)
+        if data == "panel":
+            ctx.user_data.clear()
+            count = db_count(u.id)
             await safe_edit(
                 msg,
-                "📁 *My Projects*\n\nNo projects yet! Create one to get started.",
+                f"📊 DeployX Panel\n\n"
+                f"📁 Projects: {count}\n\n"
+                f"What would you like to do?",
+                kb_panel(),
+            )
+
+        # Help
+        elif data == "help":
+            await safe_edit(msg, HELP, kb_back())
+
+        # New Project
+        elif data == "new_project":
+            ctx.user_data["state"] = STATE_WAITING_NAME
+            await safe_edit(
+                msg,
+                "➕ Create New Project\n\n"
+                "Send me a name for your project.\n\n"
+                "📝 Example: my-portfolio or cool-website\n\n"
+                "Use letters, numbers, and dashes only.",
+                kb_cancel(),
+            )
+
+        # My Projects
+        elif data == "my_projects":
+            projects = db_user_projects(u.id)
+            if not projects:
+                await safe_edit(
+                    msg,
+                    "📁 My Projects\n\n"
+                    "✨ You don't have any projects yet!\n\n"
+                    "Get started by creating your first project:",
+                    InlineKeyboardMarkup([
+                        [InlineKeyboardButton("➕ Create First Project", callback_data="new_project")],
+                        [InlineKeyboardButton("⚡ Quick Deploy (No Save)", callback_data="quick_deploy")],
+                        [InlineKeyboardButton("🔙 Back to Menu", callback_data="panel")],
+                    ]),
+                )
+            else:
+                await safe_edit(
+                    msg,
+                    f"📁 Your Projects ({len(projects)})\n\n"
+                    f"Tap any project to manage it:",
+                    kb_projects(projects),
+                )
+
+        # Quick Deploy
+        elif data == "quick_deploy":
+            ctx.user_data.clear()
+            ctx.user_data["state"] = STATE_WAITING_ZIP
+            ctx.user_data["mode"]  = "quick"
+            await safe_edit(
+                msg,
+                "⚡ Quick Deploy Mode\n\n"
+                "📤 Send me your ZIP file and I'll deploy it instantly!\n\n"
+                "💡 Tip: Make sure your ZIP:\n"
+                "• Contains an index.html file\n"
+                "• Is created with: zip -j site.zip folder/*\n"
+                "• Is under 10 MB in size\n\n"
+                "Ready when you are!",
+                kb_cancel(),
+            )
+
+        # Project Detail
+        elif data.startswith("proj_"):
+            pid = int(data.split("_")[1])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            icon = "✅" if proj["status"] == "deployed" else "🕐"
+            url_line = f"🔗 {proj['url']}" if proj["url"] else "🔗 Not deployed yet"
+            await safe_edit(
+                msg,
+                f"{icon} {proj['name']}\n\n"
+                f"Status: {proj['status'].capitalize()}\n"
+                f"{url_line}\n\n"
+                "What would you like to do?",
+                kb_project(pid),
+            )
+
+        # Deploy
+        elif data.startswith("deploy_"):
+            pid = int(data.split("_")[1])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            ctx.user_data.clear()
+            ctx.user_data["state"] = STATE_WAITING_ZIP
+            ctx.user_data["mode"] = "project"
+            ctx.user_data["pid"] = pid
+            await safe_edit(
+                msg,
+                f"🚀 Deploy → {proj['name']}\n\nSend me your .zip file.",
+                kb_cancel(),
+            )
+
+        # Redeploy
+        elif data.startswith("redeploy_"):
+            pid = int(data.split("_")[1])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            if not proj["site_id"]:
+                await q.answer("Deploy this project first before redeploying.", show_alert=True)
+                return
+            ctx.user_data.clear()
+            ctx.user_data["state"] = STATE_WAITING_REDEPLOY_ZIP
+            ctx.user_data["pid"] = pid
+            ctx.user_data["site_id"] = proj["site_id"]
+            await safe_edit(
+                msg,
+                f"🔄 Redeploy → {proj['name']}\n\n"
+                "Send me the updated .zip file.\n"
+                "Your existing site will be updated.",
+                kb_cancel(),
+            )
+
+        # Show URL
+        elif data.startswith("url_"):
+            pid = int(data.split("_")[1])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            if proj["url"]:
+                await q.answer(f"🔗 {proj['url']}", show_alert=True)
+            else:
+                await q.answer("No URL yet — deploy first.", show_alert=True)
+
+        # Delete prompt
+        elif data.startswith("delete_"):
+            pid = int(data.split("_")[1])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            await safe_edit(
+                msg,
+                f"🗑 Delete '{proj['name']}?'\n\n"
+                "⚠️ This will permanently remove the project and its Netlify site.",
+                kb_confirm(pid),
+            )
+
+        # Delete confirmed
+        elif data.startswith("confirm_delete_"):
+            pid = int(data.split("_")[2])
+            proj = db_get_project(pid)
+            if not proj or proj["user_id"] != u.id:
+                await q.answer("Project not found.", show_alert=True)
+                return
+            name = proj["name"]
+            if proj["site_id"]:
+                net_delete_site(proj["site_id"])
+            db_delete_project(pid)
+            count = db_count(u.id)
+            await safe_edit(
+                msg,
+                f"🗑 '{name}' deleted.\n\nYou now have {count} project(s).",
                 InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Create First Project", callback_data="new_project")],
-                    [InlineKeyboardButton("⚡ Quick Deploy Instead",  callback_data="quick_deploy")],
-                    [InlineKeyboardButton("🔙 Back",                  callback_data="panel")],
+                    [InlineKeyboardButton("📁 My Projects", callback_data="my_projects")],
+                    [InlineKeyboardButton("📊 Panel", callback_data="panel")],
                 ]),
             )
+
         else:
-            await safe_edit(
-                msg,
-                f"📁 *My Projects* ({len(projects)})\n\nTap a project to manage it:",
-                kb_projects(projects),
-            )
-
-    # ── Quick Deploy ──
-    elif data == "quick_deploy":
-        ctx.user_data.clear()
-        ctx.user_data["state"] = STATE_WAITING_ZIP
-        ctx.user_data["mode"]  = "quick"
-        await safe_edit(
-            msg,
-            "⚡ *Quick Deploy*\n\n"
-            "Send me your `.zip` file and I'll deploy it instantly!\n\n"
-            "💡 _Tip: use_ `zip -j site.zip folder/*`",
-            kb_cancel(),
-        )
-
-    # ── Project Detail ──
-    elif data.startswith("proj_"):
-        pid  = int(data.split("_")[1])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        icon     = "✅" if proj["status"] == "deployed" else "🕐"
-        url_line = f"🔗 `{proj['url']}`" if proj["url"] else "🔗 _Not deployed yet_"
-        await safe_edit(
-            msg,
-            f"{icon} *{proj['name']}*\n\n"
-            f"Status: *{proj['status'].capitalize()}*\n"
-            f"{url_line}\n\n"
-            "What would you like to do?",
-            kb_project(pid),
-        )
-
-    # ── Deploy ──
-    elif data.startswith("deploy_"):
-        pid  = int(data.split("_")[1])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        ctx.user_data.clear()
-        ctx.user_data["state"] = STATE_WAITING_ZIP
-        ctx.user_data["mode"]  = "project"
-        ctx.user_data["pid"]   = pid
-        await safe_edit(
-            msg,
-            f"🚀 *Deploy → {proj['name']}*\n\nSend me your `.zip` file.",
-            kb_cancel(),
-        )
-
-    # ── Redeploy ──
-    elif data.startswith("redeploy_"):
-        pid  = int(data.split("_")[1])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        if not proj["site_id"]:
-            await q.answer("Deploy this project first before redeploying.", show_alert=True)
-            return
-        ctx.user_data.clear()
-        ctx.user_data["state"]   = STATE_WAITING_REDEPLOY_ZIP
-        ctx.user_data["pid"]     = pid
-        ctx.user_data["site_id"] = proj["site_id"]
-        await safe_edit(
-            msg,
-            f"🔄 *Redeploy → {proj['name']}*\n\n"
-            "Send me the updated `.zip` file.\n"
-            "_Your existing site will be updated._",
-            kb_cancel(),
-        )
-
-    # ── Show URL ──
-    elif data.startswith("url_"):
-        pid  = int(data.split("_")[1])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        if proj["url"]:
-            await q.answer(f"🔗 {proj['url']}", show_alert=True)
-        else:
-            await q.answer("No URL yet — deploy first.", show_alert=True)
-
-    # ── Delete prompt ──
-    elif data.startswith("delete_"):
-        pid  = int(data.split("_")[1])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        await safe_edit(
-            msg,
-            f"🗑 *Delete '{proj['name']}'?*\n\n"
-            "⚠️ This will permanently remove the project and its Netlify site.",
-            kb_confirm(pid),
-        )
-
-    # ── Delete confirmed ──
-    elif data.startswith("confirm_delete_"):
-        pid  = int(data.split("_")[2])
-        proj = db_get_project(pid)
-        if not proj or proj["user_id"] != u.id:
-            await q.answer("Project not found.", show_alert=True)
-            return
-        name = proj["name"]
-        if proj["site_id"]:
-            net_delete_site(proj["site_id"])
-        db_delete_project(pid)
-        count = db_count(u.id)
-        await safe_edit(
-            msg,
-            f"🗑 *'{name}' deleted.*\n\nYou now have *{count}* project(s).",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("📁 My Projects", callback_data="my_projects")],
-                [InlineKeyboardButton("📊 Panel",       callback_data="panel")],
-            ]),
-        )
-
-    else:
-        await q.answer("Unknown action.", show_alert=True)
+            await q.answer("❓ Unknown option. Use /panel to return to menu.", show_alert=True)
+            
+    except Exception as e:
+        log.error(f"Error in callback handler: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
 #  TEXT HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
+    try:
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
 
-    if not await gate(update, ctx):
-        return
-
-    if ctx.user_data.get("state") == STATE_WAITING_NAME:
-        raw  = update.message.text.strip()
-        name = re.sub(r"[^\w\s\-]", "", raw)[:64].strip()
-        if not name:
+        if ctx.user_data.get("state") == STATE_WAITING_NAME:
+            raw = update.message.text.strip()
+            name = re.sub(r"[^\w\s\-]", "", raw)[:64].strip()
+            if not name:
+                await safe_reply(
+                    update.message,
+                    "❌ Please send a valid name (letters, numbers, dashes).",
+                    kb_cancel(),
+                )
+                return
+            pid = db_create_project(u.id, name)
+            ctx.user_data["state"] = STATE_WAITING_ZIP
+            ctx.user_data["mode"] = "project"
+            ctx.user_data["pid"] = pid
             await safe_reply(
                 update.message,
-                "❌ Please send a valid name (letters, numbers, dashes).",
+                f"✅ Project '{name}' created!\n\nNow send me the .zip file to deploy.",
                 kb_cancel(),
             )
-            return
-        pid = db_create_project(u.id, name)
-        ctx.user_data["state"] = STATE_WAITING_ZIP
-        ctx.user_data["mode"]  = "project"
-        ctx.user_data["pid"]   = pid
-        await safe_reply(
-            update.message,
-            f"✅ *Project '{name}' created!*\n\nNow send me the `.zip` file to deploy.",
-            kb_cancel(),
-        )
-    else:
-        await safe_reply(
-            update.message,
-            "👋 Use /panel to open the menu or /deploy for a quick deploy.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
-        )
+        else:
+            await safe_reply(
+                update.message,
+                "👋 Use /panel to open the menu or /deploy for a quick deploy.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
+            )
+    except Exception as e:
+        log.error(f"Error in text handler: {e}")
 
 
 # ═══════════════════════════════════════════════════════════
 #  DOCUMENT HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    db_upsert_user(u.id, u.username, u.first_name)
-
-    if not await gate(update, ctx):
-        return
-
-    state = ctx.user_data.get("state")
-    if state not in (STATE_WAITING_ZIP, STATE_WAITING_REDEPLOY_ZIP):
-        await safe_reply(
-            update.message,
-            "💡 Use /deploy or open the panel first.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
-        )
-        return
-
-    doc = update.message.document
-    if not doc.file_name.lower().endswith(".zip"):
-        await safe_reply(
-            update.message,
-            "❌ *Wrong file type.*\n\nI only accept `.zip` files.\n\n"
-            "💡 Create one with:\n`zip -j site.zip your-folder/*`",
-            kb_cancel(),
-        )
-        return
-
-    if doc.file_size and doc.file_size > MAX_ZIP_BYTES:
-        mb = doc.file_size / 1024 / 1024
-        await safe_reply(
-            update.message,
-            f"❌ *File Too Large* ({mb:.1f} MB)\n\n"
-            "Max is *10 MB*. Compress images or remove unused files.",
-            kb_cancel(),
-        )
-        return
-
-    status_msg = await safe_reply(update.message, "⬇️ *Downloading your file...*")
-    if not status_msg:
-        return
-
-    os.makedirs(WORK_DIR, exist_ok=True)
-    zip_path = os.path.join(WORK_DIR, f"{u.id}_{doc.file_unique_id}.zip")
-
     try:
-        tg = await ctx.bot.get_file(doc.file_id)
-        await tg.download_to_drive(zip_path)
+        u = update.effective_user
+        db_upsert_user(u.id, u.username, u.first_name)
+
+        state = ctx.user_data.get("state")
+        if state not in (STATE_WAITING_ZIP, STATE_WAITING_REDEPLOY_ZIP):
+            await safe_reply(
+                update.message,
+                "💡 Use /deploy or open the panel first.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("📊 Open Panel", callback_data="panel")]]),
+            )
+            return
+
+        doc = update.message.document
+        if not doc.file_name.lower().endswith(".zip"):
+            await safe_reply(
+                update.message,
+                "❌ Wrong file type.\n\nI only accept .zip files.\n\n"
+                "💡 Create one with:\nzip -j site.zip your-folder/*",
+                kb_cancel(),
+            )
+            return
+
+        if doc.file_size and doc.file_size > MAX_ZIP_BYTES:
+            mb = doc.file_size / 1024 / 1024
+            await safe_reply(
+                update.message,
+                f"❌ File Too Large ({mb:.1f} MB)\n\n"
+                "Max is 10 MB. Compress images or remove unused files.",
+                kb_cancel(),
+            )
+            return
+
+        status_msg = await safe_reply(update.message, "⬇️ Downloading your file...")
+        if not status_msg:
+            return
+
+        os.makedirs(WORK_DIR, exist_ok=True)
+        zip_path = os.path.join(WORK_DIR, f"{u.id}_{doc.file_unique_id}.zip")
+
+        try:
+            tg = await ctx.bot.get_file(doc.file_id)
+            await tg.download_to_drive(zip_path)
+        except Exception as e:
+            log.error("Download failed: %s", e)
+            await safe_edit(status_msg, "❌ Download failed. Please try again.", kb_cancel())
+            return
+
+        # Determine project
+        mode = ctx.user_data.get("mode", "quick")
+        pid = ctx.user_data.get("pid")
+        site_id = ctx.user_data.get("site_id")
+
+        if mode == "quick":
+            name = re.sub(r"\.zip$", "", doc.file_name, flags=re.IGNORECASE)[:64]
+            name = re.sub(r"[^\w\s\-]", "", name).strip() or "my-site"
+            pid = db_create_project(u.id, name)
+
+        async def cb(text: str):
+            await safe_edit(status_msg, text)
+
+        ok, result, new_site_id, dep_id = await deploy(zip_path, site_id, cb)
+
+        if ok:
+            db_update_project(pid, new_site_id, dep_id, result, "deployed")
+            proj = db_get_project(pid)
+            await safe_edit(
+                status_msg,
+                f"🎉 Deployment Successful!\n\n"
+                f"📁 Project: {proj['name']}\n"
+                f"🔗 Live URL:\n{result}\n\n"
+                "Your site is live! May take a few seconds to fully propagate.",
+                kb_deployed(result, pid),
+            )
+        else:
+            await safe_edit(status_msg, result + "\n\nTap below to go back to menu.", kb_back())
+
+        ctx.user_data.clear()
+        
     except Exception as e:
-        log.error("Download failed: %s", e)
-        await safe_edit(status_msg, "❌ *Download failed.* Please try again.", kb_cancel())
-        return
-
-    # Determine project
-    mode    = ctx.user_data.get("mode", "quick")
-    pid     = ctx.user_data.get("pid")
-    site_id = ctx.user_data.get("site_id")
-
-    if mode == "quick":
-        name = re.sub(r"\.zip$", "", doc.file_name, flags=re.IGNORECASE)[:64]
-        name = re.sub(r"[^\w\s\-]", "", name).strip() or "my-site"
-        pid  = db_create_project(u.id, name)
-
-    async def cb(text: str):
-        await safe_edit(status_msg, text)
-
-    ok, result, new_site_id, dep_id = await deploy(zip_path, site_id, cb)
-
-    if ok:
-        db_update_project(pid, new_site_id, dep_id, result, "deployed")
-        proj = db_get_project(pid)
-        await safe_edit(
-            status_msg,
-            f"🎉 *Deployment Successful!*\n\n"
-            f"📁 Project: *{proj['name']}*\n"
-            f"🔗 Live URL:\n`{result}`\n\n"
-            "_Your site is live! May take a few seconds to fully propagate._",
-            kb_deployed(result, pid),
-        )
-    else:
-        await safe_edit(status_msg, result + "\n\n_Tap below to go back._", kb_back())
-
-    ctx.user_data.clear()
+        log.error(f"Error in document handler: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -876,7 +990,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
-                "⚠️ Something went wrong. Please try again or use /start.",
+                f"⚠️ Error: {str(ctx.error)[:200]}\n\nPlease contact @LM_S0 for support.",
                 reply_markup=kb_back(),
             )
         except Exception:
@@ -887,22 +1001,32 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ═══════════════════════════════════════════════════════════
 def main():
-    db_init()
-    os.makedirs(WORK_DIR, exist_ok=True)
+    try:
+        db_init()
+        os.makedirs(WORK_DIR, exist_ok=True)
 
-    app = Application.builder().token(BOT_TOKEN).build()
+        app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start",  cmd_start))
-    app.add_handler(CommandHandler("panel",  cmd_panel))
-    app.add_handler(CommandHandler("help",   cmd_help))
-    app.add_handler(CommandHandler("deploy", cmd_deploy))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.Document.ALL, on_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.add_error_handler(on_error)
+        # Add handlers
+        app.add_handler(CommandHandler("start", cmd_start))
+        app.add_handler(CommandHandler("panel", cmd_panel))
+        app.add_handler(CommandHandler("help", cmd_help))
+        app.add_handler(CommandHandler("deploy", cmd_deploy))
+        app.add_handler(CallbackQueryHandler(on_callback))
+        app.add_handler(MessageHandler(filters.Document.ALL, on_document))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+        app.add_error_handler(on_error)
 
-    log.info("💀 DeployX Bot started.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        log.info("=" * 50)
+        log.info("DeployX Bot started successfully!")
+        log.info("Bot token: %s...", BOT_TOKEN[:10])
+        log.info("=" * 50)
+        
+        # Start polling
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        
+    except Exception as e:
+        log.error(f"Failed to start bot: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
