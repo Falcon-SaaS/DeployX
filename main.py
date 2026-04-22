@@ -370,7 +370,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if count > 0:
         text = f"Welcome back, {u.first_name}!\n\nYou have {count} project(s) saved.\n\nWhat would you like to do?"
     else:
-        text = f"Welcome to DeployX, {u.first_name}!\n\nI help you deploy websites instantly to the internet.\n\nQuick Start:\n1. Prepare your website files (must have index.html)\n2. ZIP them with: zip -j site.zip your-folder/*\n3. Send the ZIP to me\n\nThat's it! You'll get a live URL immediately."
+        text = f"Welcome to DeployX, {u.first_name}!\n\nI help you deploy websites instantly to the internet.\n\nQuick Start:\n1. Prepare your website files (must have index.html)\n2. ZIP them with: zip -j site.zip your-folder/*\n3. Send the ZIP to me\n\nThat's it! You'll get a live URL immediately.\n\n\nDev: @LM_S0\nCH: @FLCN_SS"
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Open Main Menu", callback_data="panel")],
