@@ -116,6 +116,22 @@ def db_count(user_id: int) -> int:
         return r[0] if r else 0
 
 # ═══════════════════════════════════════════════════════════
+#  SAFE REPLY - NO MARKDOWN
+# ═══════════════════════════════════════════════════════════
+async def safe_edit(msg, text: str, kb=None):
+    try:
+        await msg.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception as e:
+        log.warning(f"safe_edit error: {e}")
+
+async def safe_reply(msg, text: str, kb=None):
+    try:
+        return await msg.reply_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception as e:
+        log.warning(f"safe_reply error: {e}")
+    return None
+
+# ═══════════════════════════════════════════════════════════
 #  KEYBOARDS
 # ═══════════════════════════════════════════════════════════
 def kb_panel():
@@ -159,10 +175,34 @@ def kb_deployed(url: str, pid: int):
     ])
 
 # ═══════════════════════════════════════════════════════════
-#  SUBSCRIPTION GATE - DISABLED
+#  SUBSCRIPTION GATE - WORKING
 # ═══════════════════════════════════════════════════════════
+async def is_subscribed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        m = await ctx.bot.get_chat_member(REQUIRED_CHANNEL, update.effective_user.id)
+        return m.status in ("member", "administrator", "creator")
+    except Exception as e:
+        log.warning(f"Subscription check error: {e}")
+        return False
+
 async def gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    return True
+    if await is_subscribed(update, ctx):
+        return True
+    
+    url = f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📢 Join Channel", url=url),
+        InlineKeyboardButton("✅ I Joined", callback_data="check_sub"),
+    ]])
+    text = "🔒 Access Required\n\nJoin our channel to use DeployX Bot.\n\n1. Tap Join Channel\n2. Come back and tap I Joined"
+    
+    msg = update.callback_query.message if update.callback_query else update.effective_message
+    if update.callback_query:
+        await update.callback_query.answer("Join the channel first!", show_alert=True)
+        await safe_edit(msg, text, kb)
+    else:
+        await safe_reply(msg, text, kb)
+    return False
 
 # ═══════════════════════════════════════════════════════════
 #  NETLIFY API
@@ -318,31 +358,32 @@ async def deploy(zip_path: str, site_id: Optional[str], cb) -> tuple:
 #  COMMANDS
 # ═══════════════════════════════════════════════════════════
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        db_upsert_user(u.id, u.username, u.first_name)
-        ctx.user_data.clear()
+    u = update.effective_user
+    db_upsert_user(u.id, u.username, u.first_name)
+    ctx.user_data.clear()
 
-        count = db_count(u.id)
-        
-        if count > 0:
-            text = f"👋 Welcome back, {u.first_name}!\n\nYou have {count} project(s) saved.\n\nWhat would you like to do?"
-        else:
-            text = f"🎉 Welcome to DeployX, {u.first_name}!\n\nI help you deploy websites instantly to the internet.\n\n📦 Quick Start:\n1. Prepare your website files (must have index.html)\n2. ZIP them with: zip -j site.zip your-folder/*\n3. Send the ZIP to me\n\n✨ That's it! You'll get a live URL immediately."
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 Open Main Menu", callback_data="panel")],
-            [InlineKeyboardButton("⚡ Quick Deploy", callback_data="quick_deploy")],
-            [InlineKeyboardButton("❓ View Help Guide", callback_data="help")]
-        ])
-        
-        await update.message.reply_text(text, reply_markup=keyboard)
-        
-    except Exception as e:
-        log.error(f"Start error: {e}")
-        await update.message.reply_text("Bot is running! Use /panel to open the menu.")
+    if not await gate(update, ctx):
+        return
+
+    count = db_count(u.id)
+    
+    if count > 0:
+        text = f"Welcome back, {u.first_name}!\n\nYou have {count} project(s) saved.\n\nWhat would you like to do?"
+    else:
+        text = f"Welcome to DeployX, {u.first_name}!\n\nI help you deploy websites instantly to the internet.\n\nQuick Start:\n1. Prepare your website files (must have index.html)\n2. ZIP them with: zip -j site.zip your-folder/*\n3. Send the ZIP to me\n\nThat's it! You'll get a live URL immediately."
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Open Main Menu", callback_data="panel")],
+        [InlineKeyboardButton("Quick Deploy", callback_data="quick_deploy")],
+        [InlineKeyboardButton("View Help Guide", callback_data="help")]
+    ])
+    
+    await update.message.reply_text(text, reply_markup=keyboard)
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await gate(update, ctx):
+        return
+    
     help_text = """DeployX Bot - Quick Help
 
 How to Deploy Your Website:
@@ -371,7 +412,7 @@ No index.html -> Use -j flag when zipping
 File too large -> Max size is 10 MB
 PHP not working -> Only static sites supported
 
-Premium Templates & Private Sites:
+Premium Templates and Private Sites:
 Contact @LM_S0
 
 Need more help? Contact @LM_S0"""
@@ -379,48 +420,58 @@ Need more help? Contact @LM_S0"""
     await update.message.reply_text(help_text, reply_markup=kb_back())
 
 async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        db_upsert_user(u.id, u.username, u.first_name)
-        ctx.user_data.clear()
-        count = db_count(u.id)
-        await update.message.reply_text(f"DeployX Control Panel\n\nActive Projects: {count}\n\nChoose an option below:", reply_markup=kb_panel())
-    except Exception as e:
-        log.error(f"Panel error: {e}")
-        await update.message.reply_text("Use /start to begin.")
+    u = update.effective_user
+    db_upsert_user(u.id, u.username, u.first_name)
+    
+    if not await gate(update, ctx):
+        return
+    
+    ctx.user_data.clear()
+    count = db_count(u.id)
+    await update.message.reply_text(f"DeployX Control Panel\n\nActive Projects: {count}\n\nChoose an option below:", reply_markup=kb_panel())
 
 async def cmd_deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        db_upsert_user(u.id, u.username, u.first_name)
-        ctx.user_data.clear()
-        ctx.user_data["state"] = STATE_WAITING_ZIP
-        ctx.user_data["mode"] = "quick"
-        await update.message.reply_text("Quick Deploy\n\nSend me your .zip file and I'll deploy it instantly!\n\nTip: use zip -j site.zip folder/*", reply_markup=kb_cancel())
-    except Exception as e:
-        log.error(f"Deploy error: {e}")
-        await update.message.reply_text("Use /start to begin.")
+    u = update.effective_user
+    db_upsert_user(u.id, u.username, u.first_name)
+    
+    if not await gate(update, ctx):
+        return
+    
+    ctx.user_data.clear()
+    ctx.user_data["state"] = STATE_WAITING_ZIP
+    ctx.user_data["mode"] = "quick"
+    await update.message.reply_text("Quick Deploy\n\nSend me your .zip file and I'll deploy it instantly!\n\nTip: use zip -j site.zip folder/*", reply_markup=kb_cancel())
 
 # ═══════════════════════════════════════════════════════════
 #  CALLBACK HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        q = update.callback_query
-        await q.answer()
-        data = q.data
-        u = update.effective_user
-        msg = q.message
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    u = update.effective_user
+    msg = q.message
 
-        db_upsert_user(u.id, u.username, u.first_name)
+    if data == "check_sub":
+        if await is_subscribed(update, ctx):
+            db_upsert_user(u.id, u.username, u.first_name)
+            await safe_edit(msg, f"Verified! Welcome, {u.first_name}!\n\nYou're all set. Tap below to start deploying.", InlineKeyboardMarkup([[InlineKeyboardButton("Open Panel", callback_data="panel")]]))
+        else:
+            await q.answer("You haven't joined yet.", show_alert=True)
+        return
 
-        if data == "panel":
-            ctx.user_data.clear()
-            count = db_count(u.id)
-            await msg.edit_text(f"DeployX Panel\n\nProjects: {count}\n\nWhat would you like to do?", reply_markup=kb_panel())
+    if not await gate(update, ctx):
+        return
 
-        elif data == "help":
-            help_text = """DeployX Bot - Quick Help
+    db_upsert_user(u.id, u.username, u.first_name)
+
+    if data == "panel":
+        ctx.user_data.clear()
+        count = db_count(u.id)
+        await safe_edit(msg, f"DeployX Panel\n\nProjects: {count}\n\nWhat would you like to do?", kb_panel())
+
+    elif data == "help":
+        help_text = """DeployX Bot - Quick Help
 
 How to Deploy:
 
@@ -434,191 +485,191 @@ Commands:
 /deploy - Quick deploy
 
 Premium templates: @LM_S0"""
-            await msg.edit_text(help_text, reply_markup=kb_back())
+        await safe_edit(msg, help_text, kb_back())
 
-        elif data == "new_project":
-            ctx.user_data["state"] = STATE_WAITING_NAME
-            await msg.edit_text("Create New Project\n\nSend me a name for your project.\n\nExample: my-portfolio", reply_markup=kb_cancel())
+    elif data == "new_project":
+        ctx.user_data["state"] = STATE_WAITING_NAME
+        await safe_edit(msg, "Create New Project\n\nSend me a name for your project.\n\nExample: my-portfolio", kb_cancel())
 
-        elif data == "my_projects":
-            projects = db_user_projects(u.id)
-            if not projects:
-                await msg.edit_text("My Projects\n\nYou don't have any projects yet!\n\nGet started by creating your first project:", reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Create First Project", callback_data="new_project")],
-                    [InlineKeyboardButton("⚡ Quick Deploy", callback_data="quick_deploy")],
-                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="panel")],
-                ]))
-            else:
-                await msg.edit_text(f"Your Projects ({len(projects)})\n\nTap a project to manage it:", reply_markup=kb_projects(projects))
-
-        elif data == "quick_deploy":
-            ctx.user_data.clear()
-            ctx.user_data["state"] = STATE_WAITING_ZIP
-            ctx.user_data["mode"] = "quick"
-            await msg.edit_text("Quick Deploy Mode\n\nSend me your ZIP file and I'll deploy it instantly!\n\nMake sure your ZIP:\n- Contains index.html\n- Is under 10 MB", reply_markup=kb_cancel())
-
-        elif data.startswith("proj_"):
-            pid = int(data.split("_")[1])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            icon = "✅" if proj["status"] == "deployed" else "🕐"
-            url_line = f"URL: {proj['url']}" if proj["url"] else "Not deployed yet"
-            await msg.edit_text(f"{icon} {proj['name']}\n\nStatus: {proj['status'].capitalize()}\n{url_line}\n\nWhat would you like to do?", reply_markup=kb_project(pid))
-
-        elif data.startswith("deploy_"):
-            pid = int(data.split("_")[1])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            ctx.user_data.clear()
-            ctx.user_data["state"] = STATE_WAITING_ZIP
-            ctx.user_data["mode"] = "project"
-            ctx.user_data["pid"] = pid
-            await msg.edit_text(f"Deploy -> {proj['name']}\n\nSend me your .zip file.", reply_markup=kb_cancel())
-
-        elif data.startswith("redeploy_"):
-            pid = int(data.split("_")[1])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            if not proj["site_id"]:
-                await q.answer("Deploy this project first.", show_alert=True)
-                return
-            ctx.user_data.clear()
-            ctx.user_data["state"] = STATE_WAITING_REDEPLOY_ZIP
-            ctx.user_data["pid"] = pid
-            ctx.user_data["site_id"] = proj["site_id"]
-            await msg.edit_text(f"Redeploy -> {proj['name']}\n\nSend me the updated .zip file.", reply_markup=kb_cancel())
-
-        elif data.startswith("url_"):
-            pid = int(data.split("_")[1])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            if proj["url"]:
-                await q.answer(proj["url"], show_alert=True)
-            else:
-                await q.answer("No URL yet - deploy first.", show_alert=True)
-
-        elif data.startswith("delete_"):
-            pid = int(data.split("_")[1])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            await msg.edit_text(f"Delete '{proj['name']}'?\n\nThis will permanently remove the project and its Netlify site.", reply_markup=kb_confirm(pid))
-
-        elif data.startswith("confirm_delete_"):
-            pid = int(data.split("_")[2])
-            proj = db_get_project(pid)
-            if not proj or proj["user_id"] != u.id:
-                await q.answer("Project not found.", show_alert=True)
-                return
-            name = proj["name"]
-            if proj["site_id"]:
-                net_delete_site(proj["site_id"])
-            db_delete_project(pid)
-            count = db_count(u.id)
-            await msg.edit_text(f"'{name}' deleted.\n\nYou now have {count} project(s).", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📁 My Projects", callback_data="my_projects")],
-                [InlineKeyboardButton("📊 Panel", callback_data="panel")],
+    elif data == "my_projects":
+        projects = db_user_projects(u.id)
+        if not projects:
+            await safe_edit(msg, "My Projects\n\nYou don't have any projects yet!\n\nGet started by creating your first project:", InlineKeyboardMarkup([
+                [InlineKeyboardButton("Create First Project", callback_data="new_project")],
+                [InlineKeyboardButton("Quick Deploy", callback_data="quick_deploy")],
+                [InlineKeyboardButton("Back to Menu", callback_data="panel")],
             ]))
-
         else:
-            await q.answer("Unknown option.", show_alert=True)
+            await safe_edit(msg, f"Your Projects ({len(projects)})\n\nTap a project to manage it:", kb_projects(projects))
 
-    except Exception as e:
-        log.error(f"Callback error: {e}")
+    elif data == "quick_deploy":
+        ctx.user_data.clear()
+        ctx.user_data["state"] = STATE_WAITING_ZIP
+        ctx.user_data["mode"] = "quick"
+        await safe_edit(msg, "Quick Deploy Mode\n\nSend me your ZIP file and I'll deploy it instantly!\n\nMake sure your ZIP:\n- Contains index.html\n- Is under 10 MB", kb_cancel())
+
+    elif data.startswith("proj_"):
+        pid = int(data.split("_")[1])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        icon = "✅" if proj["status"] == "deployed" else "🕐"
+        url_line = f"URL: {proj['url']}" if proj["url"] else "Not deployed yet"
+        await safe_edit(msg, f"{icon} {proj['name']}\n\nStatus: {proj['status'].capitalize()}\n{url_line}\n\nWhat would you like to do?", kb_project(pid))
+
+    elif data.startswith("deploy_"):
+        pid = int(data.split("_")[1])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        ctx.user_data.clear()
+        ctx.user_data["state"] = STATE_WAITING_ZIP
+        ctx.user_data["mode"] = "project"
+        ctx.user_data["pid"] = pid
+        await safe_edit(msg, f"Deploy -> {proj['name']}\n\nSend me your .zip file.", kb_cancel())
+
+    elif data.startswith("redeploy_"):
+        pid = int(data.split("_")[1])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        if not proj["site_id"]:
+            await q.answer("Deploy this project first.", show_alert=True)
+            return
+        ctx.user_data.clear()
+        ctx.user_data["state"] = STATE_WAITING_REDEPLOY_ZIP
+        ctx.user_data["pid"] = pid
+        ctx.user_data["site_id"] = proj["site_id"]
+        await safe_edit(msg, f"Redeploy -> {proj['name']}\n\nSend me the updated .zip file.", kb_cancel())
+
+    elif data.startswith("url_"):
+        pid = int(data.split("_")[1])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        if proj["url"]:
+            await q.answer(proj["url"], show_alert=True)
+        else:
+            await q.answer("No URL yet - deploy first.", show_alert=True)
+
+    elif data.startswith("delete_"):
+        pid = int(data.split("_")[1])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        await safe_edit(msg, f"Delete '{proj['name']}'?\n\nThis will permanently remove the project and its Netlify site.", kb_confirm(pid))
+
+    elif data.startswith("confirm_delete_"):
+        pid = int(data.split("_")[2])
+        proj = db_get_project(pid)
+        if not proj or proj["user_id"] != u.id:
+            await q.answer("Project not found.", show_alert=True)
+            return
+        name = proj["name"]
+        if proj["site_id"]:
+            net_delete_site(proj["site_id"])
+        db_delete_project(pid)
+        count = db_count(u.id)
+        await safe_edit(msg, f"'{name}' deleted.\n\nYou now have {count} project(s).", InlineKeyboardMarkup([
+            [InlineKeyboardButton("My Projects", callback_data="my_projects")],
+            [InlineKeyboardButton("Panel", callback_data="panel")],
+        ]))
+
+    else:
+        await q.answer("Unknown option.", show_alert=True)
 
 # ═══════════════════════════════════════════════════════════
 #  TEXT HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        db_upsert_user(u.id, u.username, u.first_name)
+    u = update.effective_user
+    db_upsert_user(u.id, u.username, u.first_name)
 
-        if ctx.user_data.get("state") == STATE_WAITING_NAME:
-            name = re.sub(r"[^\w\s\-]", "", update.message.text.strip())[:64].strip()
-            if not name:
-                await update.message.reply_text("Please send a valid name (letters, numbers, dashes).", reply_markup=kb_cancel())
-                return
-            pid = db_create_project(u.id, name)
-            ctx.user_data["state"] = STATE_WAITING_ZIP
-            ctx.user_data["mode"] = "project"
-            ctx.user_data["pid"] = pid
-            await update.message.reply_text(f"Project '{name}' created!\n\nNow send me the .zip file to deploy.", reply_markup=kb_cancel())
-        else:
-            await update.message.reply_text("Use /panel to open the menu or /deploy for a quick deploy.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Panel", callback_data="panel")]]))
+    if not await gate(update, ctx):
+        return
 
-    except Exception as e:
-        log.error(f"Text handler error: {e}")
+    if ctx.user_data.get("state") == STATE_WAITING_NAME:
+        name = re.sub(r"[^\w\s\-]", "", update.message.text.strip())[:64].strip()
+        if not name:
+            await update.message.reply_text("Please send a valid name (letters, numbers, dashes).", reply_markup=kb_cancel())
+            return
+        pid = db_create_project(u.id, name)
+        ctx.user_data["state"] = STATE_WAITING_ZIP
+        ctx.user_data["mode"] = "project"
+        ctx.user_data["pid"] = pid
+        await update.message.reply_text(f"Project '{name}' created!\n\nNow send me the .zip file to deploy.", reply_markup=kb_cancel())
+    else:
+        await update.message.reply_text("Use /panel to open the menu or /deploy for a quick deploy.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Panel", callback_data="panel")]]))
 
 # ═══════════════════════════════════════════════════════════
 #  DOCUMENT HANDLER
 # ═══════════════════════════════════════════════════════════
 async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        db_upsert_user(u.id, u.username, u.first_name)
+    u = update.effective_user
+    db_upsert_user(u.id, u.username, u.first_name)
 
-        state = ctx.user_data.get("state")
-        if state not in (STATE_WAITING_ZIP, STATE_WAITING_REDEPLOY_ZIP):
-            await update.message.reply_text("Use /deploy or open the panel first.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Panel", callback_data="panel")]]))
-            return
+    if not await gate(update, ctx):
+        return
 
-        doc = update.message.document
-        if not doc.file_name.lower().endswith(".zip"):
-            await update.message.reply_text("Wrong file type.\n\nI only accept .zip files.", reply_markup=kb_cancel())
-            return
+    state = ctx.user_data.get("state")
+    if state not in (STATE_WAITING_ZIP, STATE_WAITING_REDEPLOY_ZIP):
+        await update.message.reply_text("Use /deploy or open the panel first.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Panel", callback_data="panel")]]))
+        return
 
-        if doc.file_size and doc.file_size > MAX_ZIP_BYTES:
-            mb = doc.file_size / 1024 / 1024
-            await update.message.reply_text(f"File Too Large ({mb:.1f} MB)\n\nMax is 10 MB.", reply_markup=kb_cancel())
-            return
+    doc = update.message.document
+    if not doc.file_name.lower().endswith(".zip"):
+        await update.message.reply_text("Wrong file type.\n\nI only accept .zip files.", reply_markup=kb_cancel())
+        return
 
-        status_msg = await update.message.reply_text("Downloading your file...")
-        
-        os.makedirs(WORK_DIR, exist_ok=True)
-        zip_path = os.path.join(WORK_DIR, f"{u.id}_{doc.file_unique_id}.zip")
+    if doc.file_size and doc.file_size > MAX_ZIP_BYTES:
+        mb = doc.file_size / 1024 / 1024
+        await update.message.reply_text(f"File Too Large ({mb:.1f} MB)\n\nMax is 10 MB.", reply_markup=kb_cancel())
+        return
 
-        tg = await ctx.bot.get_file(doc.file_id)
-        await tg.download_to_drive(zip_path)
+    status_msg = await update.message.reply_text("Downloading your file...")
+    
+    os.makedirs(WORK_DIR, exist_ok=True)
+    zip_path = os.path.join(WORK_DIR, f"{u.id}_{doc.file_unique_id}.zip")
 
-        mode = ctx.user_data.get("mode", "quick")
-        pid = ctx.user_data.get("pid")
-        site_id = ctx.user_data.get("site_id")
+    tg = await ctx.bot.get_file(doc.file_id)
+    await tg.download_to_drive(zip_path)
 
-        if mode == "quick":
-            name = re.sub(r"\.zip$", "", doc.file_name, flags=re.IGNORECASE)[:64]
-            name = re.sub(r"[^\w\s\-]", "", name).strip() or "my-site"
-            pid = db_create_project(u.id, name)
+    mode = ctx.user_data.get("mode", "quick")
+    pid = ctx.user_data.get("pid")
+    site_id = ctx.user_data.get("site_id")
 
-        async def cb(text: str):
-            try:
-                await status_msg.edit_text(text)
-            except:
-                pass
+    if mode == "quick":
+        name = re.sub(r"\.zip$", "", doc.file_name, flags=re.IGNORECASE)[:64]
+        name = re.sub(r"[^\w\s\-]", "", name).strip() or "my-site"
+        pid = db_create_project(u.id, name)
 
-        ok, result, new_site_id, dep_id = await deploy(zip_path, site_id, cb)
+    async def cb(text: str):
+        try:
+            await status_msg.edit_text(text)
+        except:
+            pass
 
-        if ok:
-            db_update_project(pid, new_site_id, dep_id, result, "deployed")
-            proj = db_get_project(pid)
-            await status_msg.edit_text(f"Deployment Successful!\n\nProject: {proj['name']}\nLive URL: {result}\n\nYour site is live!", reply_markup=kb_deployed(result, pid))
-        else:
-            await status_msg.edit_text(f"{result}\n\nTap below to go back.", reply_markup=kb_back())
+    ok, result, new_site_id, dep_id = await deploy(zip_path, site_id, cb)
 
-        ctx.user_data.clear()
+    if ok:
+        db_update_project(pid, new_site_id, dep_id, result, "deployed")
+        proj = db_get_project(pid)
+        await status_msg.edit_text(f"Deployment Successful!\n\nProject: {proj['name']}\nLive URL: {result}\n\nYour site is live!", reply_markup=kb_deployed(result, pid))
+    else:
+        await status_msg.edit_text(f"{result}\n\nTap below to go back.", reply_markup=kb_back())
 
-    except Exception as e:
-        log.error(f"Document error: {e}")
-        await update.message.reply_text("Error processing file. Please try again.", reply_markup=kb_back())
+    ctx.user_data.clear()
+
+# ═══════════════════════════════════════════════════════════
+#  ERROR HANDLER
+# ═══════════════════════════════════════════════════════════
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    log.error("Unhandled exception", exc_info=ctx.error)
 
 # ═══════════════════════════════════════════════════════════
 #  MAIN
@@ -636,6 +687,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_error_handler(on_error)
 
     log.info("DeployX Bot started successfully!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
